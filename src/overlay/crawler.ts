@@ -217,7 +217,7 @@ function parsePeersAt(bytes: Uint8Array, offset: number, authenticated = false):
       const failures = readUint32(bytes, peerOffset + 8 + addressLength);
       if (port < 1 || port > 65535) throw new Error(`Invalid overlay peer port ${port}`);
       peers.push({ ip, port, failures });
-      peerOffset += 16 + addressLength;
+      peerOffset += 12 + addressLength;
     }
     if (peerOffset > bytes.length) throw new Error('PEERS message contains a truncated peer');
     return peers;

@@ -399,9 +399,7 @@ function chainDiagnostic(
 }
 
 type HistoryFetchOrOptions =
-  | typeof fetch
-  | HistoryPublishOptions
-  | readonly (HistoryCheckpoint | number | string)[];
+  typeof fetch | HistoryPublishOptions | readonly (HistoryCheckpoint | number | string)[];
 
 function isCheckpointArray(
   value: HistoryFetchOrOptions,
