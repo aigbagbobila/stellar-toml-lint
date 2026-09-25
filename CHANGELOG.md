@@ -9,6 +9,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Follow and lint `toml` currency pointers. A `[[CURRENCIES]]` entry that points at a separate
+  document via `toml` now has that document fetched and linted as part of the same run, so an
+  anchor cannot pass with a broken linked asset. Enabled by `--follow-links` and implied by
+  `--domain`. Findings from a linked document are prefixed with its URL, a pointer that cannot be
+  fetched is a `network/toml-pointer-fetch` warning rather than a hard failure, and fetches are
+  capped at 20 so a long currency list cannot fan out unboundedly.
+
+- `--preset validator|anchor-sep24|issuer` applies a curated rule bundle for an organisation's role
+  in the ecosystem, so a validator operator, a SEP-24 anchor, and a standalone asset issuer stop
+  carrying the same `--off` chain through every workflow. `validator` keeps the validator and
+  general file checks and silences the currency and anchor service rules (raising a duplicate
+  validator `HOST` or `ALIAS` to `error`); `anchor-sep24` holds the SEP-24, SEP-10, and currency
+  requirements at `error` and silences the validator rules; `issuer` holds currency, collateral,
+  and documentation completeness at `error` and silences the anchor service rules. A preset is a
+  baseline, so an explicit `--off`/`--warn`/`--error` still wins whatever order the flags appear in,
+  and an unknown name lists the available presets and exits `2`. Bundles are assembled from the rule
+  registry, so a rule registered later joins the group its category puts it in (#20).
+- `general/deprecated-field` warns about legacy `AUTH_SERVER` and `DEPOSIT_SERVER` fields,
+  unencrypted `FEDERATION_SERVER` values, and documentation keys placed outside `[DOCUMENTATION]`,
+  with replacement syntax for SEP-10, SEP-12, SEP-6, and SEP-24 (#126).
 - `--format markdown` emits a GitHub-flavored Markdown report built for a workflow's
   `$GITHUB_STEP_SUMMARY`: a pass/fail header with the error, warning, and info counts, a table with a
   row per finding, and collapsible `<details>` blocks carrying suggestions and spec links. `|`, `<`,

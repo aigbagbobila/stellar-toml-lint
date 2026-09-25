@@ -11,7 +11,7 @@ import { watch } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { assertKnownRule, loadConfig } from './config.js';
-import { lint, lintDomain, finalize } from './lint.js';
+import { lint, lintDomain, finalize, followTomlPointers } from './lint.js';
 import { checkNetworkAccounts } from './network-checks.js';
 import { checkCorsPreflight } from './network/cors-preflight.js';
 import {
@@ -39,6 +39,7 @@ import { checkHistoryPublish } from './history/publish-validator.js';
 import { checkDnsIntegrity } from './security/dns-integrity.js';
 import { checkOverlayPeers } from './overlay/crawler.js';
 import { allRules } from './rules/index.js';
+import { PRESETS, resolvePreset, type PresetName } from './presets.js';
 import { generateBadgeSvg, generateShieldsEndpoint } from './generators/badge.js';
 import {
   generateAnchorPlatformConfig,
@@ -74,8 +75,10 @@ interface Cli {
   quiet: boolean;
   showHelp: boolean;
   rules: RuleOverrides;
+  preset?: PresetName;
   maxWarnings?: number;
   checkNetwork: boolean;
+  followLinks: boolean;
   verifySep10: boolean;
   crawlPeers: boolean;
   verifyDnssec: boolean;
@@ -119,6 +122,8 @@ OPTIONS
       --off <rule>        Disable a rule (repeatable)
       --error <rule>      Raise a rule to error (repeatable)
       --warn <rule>       Lower a rule to warning (repeatable)
+      --preset <name>     Start from a role's rule bundle: validator, anchor-sep24,
+                          or issuer (see PRESETS)
   -i, --interactive       Full-screen dashboard to walk the findings. Needs a TTY;
                           without one the text reporter is used instead
       --lsp               Run as a Language Server on stdio (diagnostics,
@@ -133,6 +138,8 @@ OPTIONS
       --verify-sep10      Verify SEP-10 nonce uniqueness and replay resistance
       --crawl-peers       Discover overlay peers with GET_PEERS and check connectivity
       --verify-dnssec     Compare A/AAAA answers across DNSSEC-validating DoH resolvers
+      --follow-links      Fetch and lint the toml pointers in CURRENCIES
+                          (implied by --domain)
       --check-contracts   Verify Soroban contract and WASM TTL liveliness
       --soroban-rpc <url> Soroban RPC endpoint to use with --check-contracts
       --mock-fixtures <dir>
@@ -171,6 +178,30 @@ CONFIG
                          CLI flags always override the file; a malformed config
                          or an unknown rule id exits with code 2.
 
+PRESETS
+  --preset <name>        Apply a role's rule bundle before anything else, so a
+                         team that is only half an ecosystem does not have to
+                         copy a long --off chain into every workflow:
+
+    validator            [[VALIDATORS]] and general file checks stay on; the
+                         currency issuance and anchor service rules are off.
+                         Duplicate validator hosts and aliases fail the build.
+    anchor-sep24         SEP-24, SEP-10, and currency requirements at error
+                         (a transfer server with no [[CURRENCIES]], an
+                         incomplete SEP-45 pair, an undescribed anchored
+                         asset). Validator rules are off — an anchor runs no
+                         validator nodes.
+    issuer               Currency, collateral, and documentation completeness
+                         at error. Anchor service rules are off — a standalone
+                         issuer runs no servers.
+
+                         A preset is a baseline, not a policy: an explicit
+                         --off, --warn, or --error on the same command line
+                         still wins, whatever order the flags appear in. For the
+                         same reason a preset overrides .stellartomlrc.json.
+                         An unknown name lists the available presets and exits
+                         with code 2.
+
 EXIT CODES
   0  no errors     1  errors found     2  bad usage, unmatched glob, or I/O failure
 
@@ -178,6 +209,7 @@ EXAMPLES
   stellar-toml-lint public/.well-known/stellar.toml
   stellar-toml-lint "accounts/*/stellar.toml"
   stellar-toml-lint --domain example.com --strict
+  stellar-toml-lint --preset validator public/.well-known/stellar.toml
   stellar-toml-lint -f sarif > results.sarif
   stellar-toml-lint --graph mermaid > diagram.mmd
   stellar-toml-lint --graph dot --graph-contracts > diagram.dot
@@ -231,6 +263,7 @@ async function main(argv: string[]): Promise<number> {
             strict,
             rules,
             checkNetwork: cli.checkNetwork,
+            followLinks: true,
           },
           fetchImpl,
         );
@@ -275,7 +308,7 @@ async function main(argv: string[]): Promise<number> {
 
           if (
             fileResult.parsed &&
-            (cli.checkNetwork || cli.checkContracts || cli.domain !== undefined)
+            (cli.checkNetwork || cli.checkContracts || cli.followLinks || cli.domain !== undefined)
           ) {
             const networkDiagnostics: Diagnostic[] = [];
 
@@ -333,6 +366,16 @@ async function main(argv: string[]): Promise<number> {
                   rules,
                   fetchImpl,
                 })),
+              );
+            }
+
+            if (cli.followLinks) {
+              networkDiagnostics.push(
+                ...(await followTomlPointers(
+                  fileResult.parsed,
+                  { strict: fileStrict, rules, domain: cli.domain },
+                  fetchImpl,
+                )),
               );
             }
 
@@ -608,6 +651,7 @@ function parseArgs(argv: string[]): Cli | 'handled' {
     showHelp: false,
     rules: {},
     checkNetwork: false,
+    followLinks: false,
     verifySep10: false,
     crawlPeers: false,
     verifyDnssec: false,
@@ -707,6 +751,10 @@ function parseArgs(argv: string[]): Cli | 'handled' {
         cli.verifyDnssec = true;
         break;
 
+      case '--follow-links':
+        cli.followLinks = true;
+        break;
+
       case '--check-contracts':
         cli.checkContracts = true;
         break;
@@ -789,6 +837,14 @@ function parseArgs(argv: string[]): Cli | 'handled' {
         break;
       }
 
+      case '--preset': {
+        const value = requireValue(argv, ++i, arg);
+        // Resolved here rather than stored as a name, so an unknown preset is
+        // the same exit-2 usage error an unknown rule id is.
+        cli.preset = resolvePreset(value).name;
+        break;
+      }
+
       case '-q':
       case '--quiet':
         cli.quiet = true;
@@ -810,6 +866,13 @@ function parseArgs(argv: string[]): Cli | 'handled' {
         if (arg.startsWith('--')) throw new Error(`Unknown option "${arg}".`);
         cli.paths.push(arg);
     }
+  }
+
+  if (cli.preset !== undefined) {
+    // The bundle is laid down *after* the loop, so a rule flag wins whether it
+    // was typed before or after `--preset`: the preset is a baseline, and the
+    // command line is the intent for this run.
+    cli.rules = { ...PRESETS[cli.preset].rules, ...cli.rules };
   }
 
   return cli;
