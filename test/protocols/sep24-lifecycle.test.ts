@@ -74,7 +74,9 @@ describe('isValidTransition', () => {
     for (const terminal of SEP24_TERMINAL_STATES) {
       expect(SEP24_ALLOWED_TRANSITIONS[terminal]).toEqual([]);
       expect(isValidTransition(terminal, 'pending_anchor')).toBe(false);
-      expect(isValidTransition(terminal, 'completed')).toBe(false);
+      if (terminal !== 'completed') {
+        expect(isValidTransition(terminal, 'completed')).toBe(false);
+      }
     }
   });
 

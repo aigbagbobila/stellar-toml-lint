@@ -206,23 +206,22 @@ async function checkReachability(
   lookups: FederationLookupFlags,
   fetchImpl: typeof fetch,
 ): Promise<string | undefined> {
+  // Probe both directions even when the first one answers: the point of the
+  // check is which lookups the preserved declaration still reaches, so the run
+  // must not short-circuit on the forward lookup and skip reverse.
+  const probes: string[] = [];
   if (lookups.forward) {
-    const reachable = await probeFederation(
-      endpoint,
-      `q=${encodeURIComponent(PROBE_FORWARD_ADDRESS)}&type=name`,
-      fetchImpl,
-    );
-    if (reachable) return undefined;
+    probes.push(`q=${encodeURIComponent(PROBE_FORWARD_ADDRESS)}&type=name`);
   }
   if (lookups.reverse) {
-    const reachable = await probeFederation(
-      endpoint,
-      `q=${encodeURIComponent(PROBE_REVERSE_ACCOUNT)}&type=id`,
-      fetchImpl,
-    );
-    if (reachable) return undefined;
+    probes.push(`q=${encodeURIComponent(PROBE_REVERSE_ACCOUNT)}&type=id`);
   }
-  return lookups.forward || lookups.reverse ? `No SEP-2 lookup answered at ${endpoint}` : undefined;
+  if (probes.length === 0) return undefined;
+
+  const reachable = await Promise.all(
+    probes.map((query) => probeFederation(endpoint, query, fetchImpl)),
+  );
+  return reachable.some(Boolean) ? undefined : `No SEP-2 lookup answered at ${endpoint}`;
 }
 
 /**
